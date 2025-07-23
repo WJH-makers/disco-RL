@@ -3,7 +3,7 @@
 This repository contains accompanying code for the *"Discovering
  State-of-the-art Reinforcement Learning Algorithms"* Nature publication.
 
-It provides a minimal harness for the DiscoRL setup together with the
+It provides a minimal JAX harness for the DiscoRL setup together with the
  original meta-learned weights for the *Disco103* discovered update rule.
 
 The harness supports both:
@@ -34,7 +34,28 @@ The package can also be installed from colab:
 
 ## Usage
 
-Examples of usage can be found in the colabs above.
+The code is structured as follows:
+
+* `environments/` contains the general interface for the environments that can
+  be used with the provided harness, and two implementations of `Catch`:
+  a CPU-based one and jittable;
+
+* `networks/` includes a simple MLP network and LSTM-based components of the
+  DiscoRL models, all implemented in Haiku;
+
+* `update_rules/` has implementations of the discovered rules, actor-critic, and
+  policy gradient;
+
+* `value_fns/` contains value-function related utilities;
+
+* `types.py`, `utils.py`, `optimizers.py` implement a basic functionality for
+  the harness;
+
+* `agent.py` is a generic implementation of an RL agent which uses the update
+  rule's API for training, hence it is compatible with all the rules from
+  `update_rules/`.
+
+Detailed examples of usage can be found in the colabs above.
 
 ## Citing this work
 

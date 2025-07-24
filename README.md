@@ -57,18 +57,6 @@ The code is structured as follows:
 
 Detailed examples of usage can be found in the colabs above.
 
-## Citing this work
-
-TODO
-
-```
-@article{publicationname,
-      title={Publication Name},
-      author={Author One and Author Two and Author Three},
-      year={2025},
-}
-```
-
 ## License and disclaimer
 
 Copyright 2025 Google LLC

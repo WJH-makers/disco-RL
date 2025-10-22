@@ -57,6 +57,20 @@ The code is structured as follows:
 
 Detailed examples of usage can be found in the colabs above.
 
+## Citation
+
+Please cite the original Nature paper:
+
+```
+@Article{DiscoRL2025,
+  author  = {Oh, Junhyuk and Farquhar, Greg and Kemaev, Iurii and Calian, Dan A. and Hessel, Matteo and Zintgraf, Luisa and Singh, Satinder and van Hasselt, Hado and Silver, David},
+  journal = {Nature},
+  title   = {Discovering State-of-the-art Reinforcement Learning Algorithms},
+  year    = {2025},
+  doi     = {10.1038/s41586-025-09761-x}
+}
+```
+
 ## License and disclaimer
 
 Copyright 2025 Google LLC

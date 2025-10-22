@@ -26,7 +26,7 @@ import jmp
 import numpy as np
 import rlax
 
-from disco_rl.disco_rl import types
+from disco_rl import types
 
 _T = TypeVar('_T')
 _SpecsT = TypeVar('_SpecsT')

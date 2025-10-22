@@ -21,8 +21,8 @@ import jax
 from jax import numpy as jnp
 import numpy as np
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl import utils
+from disco_rl import types
+from disco_rl import utils
 
 
 def get_action_model(name: str, *args, **kwargs):

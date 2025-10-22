@@ -25,9 +25,9 @@ import jax
 from jax import lax
 from jax import numpy as jnp
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl import utils
-from disco_rl.disco_rl.update_rules import input_transforms
+from disco_rl import types
+from disco_rl import utils
+from disco_rl.update_rules import input_transforms
 
 
 class MetaNet(hk.Module):

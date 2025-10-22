@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import rlax
 
-from disco_rl.disco_rl import utils
+from disco_rl import utils
 
 
 class InputTransform:

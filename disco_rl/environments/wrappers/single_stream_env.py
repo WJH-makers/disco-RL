@@ -21,8 +21,8 @@ import chex
 import dm_env
 import numpy as np
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl.environments import base
+from disco_rl import types
+from disco_rl.environments import base
 
 
 def _to_env_timestep(timestep: dm_env.TimeStep) -> types.EnvironmentTimestep:

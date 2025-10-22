@@ -23,8 +23,8 @@ import jax.numpy as jnp
 from ml_collections import config_dict as configdict
 import numpy as np
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl.environments import base
+from disco_rl import types
+from disco_rl.environments import base
 
 
 def _to_env_timestep(

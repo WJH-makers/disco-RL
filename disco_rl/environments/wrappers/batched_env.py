@@ -24,9 +24,9 @@ from ml_collections import config_dict as configdict
 import numpy as np
 import rlax
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl import utils
-from disco_rl.disco_rl.environments import base
+from disco_rl import types
+from disco_rl import utils
+from disco_rl.environments import base
 
 
 class UnusedEnvState:

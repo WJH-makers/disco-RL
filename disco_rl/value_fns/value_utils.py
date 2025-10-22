@@ -24,8 +24,8 @@ import jax.numpy as jnp
 from optax import losses
 import rlax
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl import utils
+from disco_rl import types
+from disco_rl import utils
 
 
 DEFAULT_DISCOUNT = 0.995

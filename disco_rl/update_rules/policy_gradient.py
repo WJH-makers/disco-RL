@@ -23,9 +23,9 @@ import chex
 import distrax
 from jax import numpy as jnp
 
-from disco_rl.disco_rl import types
-from disco_rl.disco_rl import utils
-from disco_rl.disco_rl.update_rules import base
+from disco_rl import types
+from disco_rl import utils
+from disco_rl.update_rules import base
 
 
 class PolicyGradientUpdate(base.UpdateRule):

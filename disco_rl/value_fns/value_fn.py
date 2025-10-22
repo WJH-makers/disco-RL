@@ -21,11 +21,11 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from disco_rl import optimizers
-from disco_rl import types
-from disco_rl import utils
-from disco_rl.networks import nets
-from disco_rl.value_fns import value_utils
+from disco_rl.disco_rl import optimizers
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl import utils
+from disco_rl.disco_rl.networks import nets
+from disco_rl.disco_rl.value_fns import value_utils
 
 
 class ValueFunction:

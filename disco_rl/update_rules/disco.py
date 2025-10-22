@@ -23,11 +23,11 @@ import jax.numpy as jnp
 from ml_collections import config_dict
 import rlax
 
-from disco_rl import types
-from disco_rl import utils
-from disco_rl.networks import meta_nets
-from disco_rl.update_rules import base
-from disco_rl.value_fns import value_utils
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl import utils
+from disco_rl.disco_rl.networks import meta_nets
+from disco_rl.disco_rl.update_rules import base
+from disco_rl.disco_rl.value_fns import value_utils
 
 
 class DiscoUpdateRule(base.UpdateRule):

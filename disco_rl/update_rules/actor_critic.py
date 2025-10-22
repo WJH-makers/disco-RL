@@ -25,10 +25,10 @@ import jax
 from jax import numpy as jnp
 import numpy as np
 
-from disco_rl import types
-from disco_rl import utils
-from disco_rl.update_rules import base
-from disco_rl.value_fns import value_utils
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl import utils
+from disco_rl.disco_rl.update_rules import base
+from disco_rl.disco_rl.value_fns import value_utils
 
 
 class ActorCritic(base.UpdateRule):

@@ -25,8 +25,8 @@ import jax
 from jax import numpy as jnp
 import numpy as np
 
-from disco_rl import types
-from disco_rl.networks import action_models
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl.networks import action_models
 
 
 def get_network(name: str, *args, **kwargs) -> types.PolicyNetwork:

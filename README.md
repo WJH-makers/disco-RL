@@ -21,8 +21,8 @@ Note that it will not be actively maintained moving forward.
 Set up a Python virtual environment and install the package:
 
 ```bash
-python3 -m venv .disco_rl_venv
-source .disco_rl_venv/bin/activate
+python3 -m venv disco_rl_venv
+source disco_rl_venv/bin/activate
 pip install git+https://github.com/google-deepmind/disco_rl.git
 ```
 

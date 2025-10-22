@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 from ml_collections import config_dict
 
-from disco_rl.environments.wrappers import batched_jittable_env
+from disco_rl.disco_rl.environments.wrappers import batched_jittable_env
 
 
 class _SingleStreamCatch:

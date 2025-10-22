@@ -26,13 +26,13 @@ from ml_collections import config_dict
 import numpy as np
 import optax
 
-from disco_rl import optimizers
-from disco_rl import types
-from disco_rl.networks import nets
-from disco_rl.update_rules import actor_critic
-from disco_rl.update_rules import base as update_rules_base
-from disco_rl.update_rules import disco
-from disco_rl.update_rules import policy_gradient
+from disco_rl.disco_rl import optimizers
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl.networks import nets
+from disco_rl.disco_rl.update_rules import actor_critic
+from disco_rl.disco_rl.update_rules import base as update_rules_base
+from disco_rl.disco_rl.update_rules import disco
+from disco_rl.disco_rl.update_rules import policy_gradient
 
 
 @chex.dataclass(frozen=True)

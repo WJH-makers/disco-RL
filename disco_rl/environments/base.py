@@ -20,8 +20,8 @@ from typing import Any, TypeVar
 
 import chex
 
-from disco_rl import types
-from disco_rl import utils
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl import utils
 
 _EnvState = TypeVar('_EnvState')
 

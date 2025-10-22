@@ -20,8 +20,8 @@ from dm_env import specs as dm_env_specs
 import jax
 import jax.numpy as jnp
 
-from disco_rl import types
-from disco_rl import utils
+from disco_rl.disco_rl import types
+from disco_rl.disco_rl import utils
 
 ArraySpec = types.ArraySpec
 

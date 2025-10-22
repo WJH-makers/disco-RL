@@ -20,8 +20,8 @@ from dm_env import specs
 from ml_collections import config_dict as configdict
 import numpy as np
 
-from disco_rl.environments.wrappers import batched_env
-from disco_rl.environments.wrappers import single_stream_env
+from disco_rl.disco_rl.environments.wrappers import batched_env
+from disco_rl.disco_rl.environments.wrappers import single_stream_env
 
 _ACTIONS = (-1, 0, 1)  # Left, no-op, right.
 

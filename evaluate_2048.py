@@ -121,7 +121,7 @@ def main():
 
     print("--- 3. 开始运行 AI 玩 2048 (评估模式) ---")
 
-    rng_key = jax.random.PRNGKey(178)  # 评估时使用固定的种子
+    rng_key = jax.random.PRNGKey(220)  # 评估时使用固定的种子
 
     # (E) 重置环境和 AI 状态
     rng_key, env_rng, actor_rng = jax.random.split(rng_key, 3)

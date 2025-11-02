@@ -33,10 +33,12 @@ def get_network(name: str, *args, **kwargs) -> types.PolicyNetwork:
   """Constructs a network."""
 
   def _get_net():
-    if name == 'mlp':
-      return MLP(*args, **kwargs)
-    else:
-      raise ValueError(f'Unknown network: {name}')
+      if name == 'mlp':
+          return MLP(*args, **kwargs)
+      elif name == 'cnn':  # <--- 添加这一行
+          return CNN(*args, **kwargs)  # <--- 添加这一行
+      else:
+          raise ValueError(f'Unknown network: {name}')
 
   def _agent_step(*call_args, **call_kwargs):
     return _get_net()(*call_args, **call_kwargs)
@@ -156,3 +158,50 @@ class MLP(MLPHeadNet):
     inputs = [hk.Flatten()(x) for x in jax.tree_util.tree_leaves(inputs)]
     inputs = jnp.concatenate(inputs, axis=-1)
     return hk.nets.MLP(self._dense, name='torso')(inputs)
+
+class CNN(MLPHeadNet):
+    """一个处理 2048 棋盘 (4, 4, 16) 的 CNN 嵌入网络。"""
+
+    def __init__(
+        self,
+        out_spec: chex.ArrayTree,
+        action_spec: types.Specs,
+        head_w_init_std: float | None,
+        model_out_spec: chex.ArrayTree | None = None,
+        model_arch_name: str | None = None,
+        model_kwargs: Mapping[str, Any] | None = None,
+        module_name: str | None = None,
+        conv_channels: Iterable[int] = (32, 64),
+        mlp_hiddens: Iterable[int] = (128,),
+    ) -> None:
+        self._conv_channels = conv_channels
+        self._mlp_hiddens = mlp_hiddens
+        super().__init__(
+            out_spec,
+            action_spec=action_spec,
+            model_out_spec=model_out_spec,
+            head_w_init_std=head_w_init_std,
+            model_arch_name=model_arch_name,
+            model_kwargs=model_kwargs,
+            module_name=module_name,
+        )
+
+    def _embedding_pass(
+        self, inputs: chex.ArrayTree, should_reset: chex.Array | None = None
+    ) -> chex.Array:
+        """
+        重写 _embedding_pass 来使用 CNN。
+        """
+        del should_reset
+        # inputs['observation'] 的形状是 (B, 4, 4, 16)
+        x = inputs['observation']
+
+        # Haiku 卷积层
+        for i, channels in enumerate(self._conv_channels):
+            # 使用 2x2 卷积核, 'VALID' 填充
+            x = hk.Conv2D(output_channels=channels, kernel_shape=2, padding='VALID', name=f"conv_{i}")(x)
+            x = jax.nn.relu(x)
+
+        x = hk.Flatten()(x)
+        x = hk.nets.MLP(self._mlp_hiddens, name='torso_mlp')(x)
+        return x

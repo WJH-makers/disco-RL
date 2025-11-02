@@ -34,8 +34,10 @@ def _to_env_timestep(
       step_type=jax.lax.select(
           is_terminal, dm_env.StepType.LAST, dm_env.StepType.MID
       ),
-      reward=reward.astype(jnp.float32),
-      observation=obs.astype(jnp.float32),
+      reward=jnp.array(reward, dtype=jnp.float32),
+      observation=jax.tree_util.tree_map(
+          lambda x: jnp.array(x, dtype=jnp.float32), obs
+      ),
   )
 
 

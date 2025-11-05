@@ -3,6 +3,9 @@
 #       并让它玩一个完整的 2048 游戏，直到结束。
 #
 # *** 新功能：使用与训练时一致的 "sample()" 策略 (随机探索) ***
+#
+# [已更新]：使用 AxialTransformer 架构以匹配训练脚本。
+import os
 
 import jax
 import jax.numpy as jnp
@@ -76,19 +79,37 @@ def main():
 
     # (A) 实例化 Agent (必须使用与训练时完全相同的设置)
     agent_settings = agent_lib.get_settings_disco()
-    agent_settings.net_settings.name = 'cnn'
+
+    # ===== [关键更新] 使用 AxialTransformer 配置 =====
+    # 必须与 train_2048_optimized.py 中的配置完全一致
+    print("[注意] 加载 AxialTransformer 架构...")
+    agent_settings.net_settings.name = 'axial_transformer'
     agent_settings.net_settings.net_args = dict(
+        # 基础模型参数 (LSTM / MLP Head)
         model_arch_name='lstm',
-        head_w_init_std=1e-2,
-        model_kwargs=dict(head_mlp_hiddens=(128,), lstm_size=128),
-        conv_channels=(128, 256),
-        mlp_hiddens=(256,),
+        head_w_init_std=1e-2,  # 评估时此值不重要，但为保持一致
+        model_kwargs=dict(
+            head_mlp_hiddens=(128,),  # 匹配训练脚本
+            lstm_size=96,  # 匹配训练脚本
+        ),
+
+        # AxialTransformer 特定参数 (必须匹配训练脚本)
+        num_layers=3,
+        num_heads=4,
+        embed_dim=128,
+        mlp_ratio=2.0,
+        qkv_bias=True,
+        drop_rate=0.0,
     )
+    # ===== [更新结束] =====
 
     # (B) 实例化 2048 环境 (只需要 batch_size=1)
+    env_config = jittable_2048.get_config_2048()
+    env_config.observation_mode = 'one_hot'  # 确保与训练时一致
+
     env = jittable_2048.BatchedJittable2048Environment(
         batch_size=1,  # 评估时只玩一个游戏
-        env_settings=jittable_2048.get_config_2048()
+        env_settings=env_config
     )
 
     # (C) 实例化 Agent
@@ -100,17 +121,25 @@ def main():
     )
 
     print("--- 2. 加载已训练的权重 ('学生'的大脑) ---")
+
+    # 尝试加载最佳权重，如果不存在，则加载常规权重
+    weights_to_load = 'my_2048_agent_weights_best.npz'
+    if not os.path.exists(weights_to_load):
+        print(f"未找到 '{weights_to_load}'，尝试加载 'my_2048_agent_weights.npz'")
+        weights_to_load = 'my_2048_agent_weights.npz'
+
     try:
-        # 加载您在 train_2048.py 中保存的文件
-        # my_2048_agent_weights.npz
-        # my_2048_agent_weights_best.npz
-        with open('my_2048_agent_weights.npz', 'rb') as file:
+        with open(weights_to_load, 'rb') as file:
             flat_params = np.load(file, allow_pickle=True)
             trained_params = unflatten_params(flat_params)
-        print("权重 'my_2048_agent_weights.npz' 加载成功。")
+        print(f"权重 '{weights_to_load}' 加载成功。")
     except FileNotFoundError:
-        print("错误：未找到 'my_2048_agent_weights.npz'。")
-        print("请先运行 train_2048.py 来生成权重文件。")
+        print(f"错误：未找到 '{weights_to_load}'。")
+        print("请先运行 train_2048_optimized.py 来生成权重文件。")
+        return
+    except Exception as e:
+        print(f"加载权重时出错: {e}")
+        print("请确保 'nets.py' 已更新，并且此处的 'net_args' 配置与训练时完全一致。")
         return
 
     # (D) JIT 编译我们需要的函数
@@ -119,9 +148,10 @@ def main():
     jitted_env_reset = jax.jit(env.reset)
     # 【已删除】不再需要 jitted_get_mask
 
-    print("--- 3. 开始运行 AI 玩 2048 (评估模式) ---")
-
-    rng_key = jax.random.PRNGKey(220)  # 评估时使用固定的种子
+    print("--- 3. 开始运行 AI 玩 2048 (采样模式) ---")
+    seed = np.uint32(time.time_ns() % (1 << 32))
+    rng_key = jax.random.PRNGKey(seed)  # 使用动态种子
+    print(f"使用随机种子: {int(seed)}")
 
     # (E) 重置环境和 AI 状态
     rng_key, env_rng, actor_rng = jax.random.split(rng_key, 3)
@@ -130,6 +160,7 @@ def main():
 
     total_game_score = 0.0
     game_steps = 0
+    max_tile = 0
 
     # (F) 游戏循环
     while True:
@@ -139,8 +170,10 @@ def main():
 
         # 2. 检查游戏是否结束
         if timestep.step_type[0] == StepType.LAST:
+            max_tile = int(2 ** jnp.max(current_board))
             print("\n!!! 游戏结束 !!!")
             print(f"最终得分: {total_game_score}")
+            print(f"最大方块: {max_tile}")
             print(f"总步数: {game_steps}")
             break
 

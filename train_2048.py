@@ -19,8 +19,13 @@
 #    - 分支 0 (模仿): 调用 `DiscoUpdateRule.agent_loss`
 #    - 分支 1 (RL): 调用 `ActorCritic.agent_loss_no_meta` (V-trace)
 # =================================================================
+from typing_extensions import Unpack
 
 import os, time, tqdm, jax, jax.numpy as jnp, numpy as np, chex, haiku as hk, optax
+import csv
+from pathlib import Path
+import imageio
+import pickle
 from functools import partial
 from ml_collections import config_dict
 from dm_env import StepType
@@ -548,18 +553,18 @@ def _train_step_v5_1(
 
         # v5.1 混合逻辑:
         total_loss_per_step = (imitation_loss_coeff * loss_imitation) + loss_rl
-
-        # agent.py:227
         total_loss = (total_loss_per_step * valid_mask).sum() / (valid_mask.sum() + 1e-8)
+        total_loss = jnp.nan_to_num(total_loss, nan=1e9, posinf=1e9, neginf=-1e9)
 
         logs = log_imitation | log_rl
         logs['total_loss'] = total_loss
-        logs['imitation_loss'] = jnp.mean(loss_imitation)
-        logs['rl_loss'] = jnp.mean(loss_rl)
+        logs['imitation_loss'] = jnp.nan_to_num(jnp.mean(loss_imitation), nan=1e9, posinf=1e9, neginf=-1e9)
+        logs['rl_loss'] = jnp.nan_to_num(jnp.mean(loss_rl), nan=1e9, posinf=1e9, neginf=-1e9)
 
         return total_loss, logs
 
     ((loss, logs), grads) = jax.value_and_grad(_loss_fn, has_aux=True)(learner_state.params)
+    grads = jax.tree.map(lambda g: jnp.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0), grads)
 
     # 4. Optimizer Update (来自 agent.learner_step)
     updates, new_opt_state = optimizer.update(grads, learner_state.opt_state, learner_state.params)
@@ -573,11 +578,28 @@ def _train_step_v5_1(
         params=new_params, opt_state=new_opt_state, meta_state=new_meta_state
     )
 
+    # 6. 内联部分 reset（在 GPU 内完成，避免额外 host 调用）
+    done_mask = (new_ts.step_type == StepType.LAST)
+    rngs = jax.random.split(actor_rng, done_mask.shape[0])
+    vmap_reset = jax.vmap(env._single_env_reset)
+    reset_env, reset_ts = vmap_reset(rngs)
+    vmap_actor = jax.vmap(agent.initial_actor_state)
+    reset_actor = vmap_actor(rngs)
+    def merge_tree(old, new):
+        if hasattr(old, "ndim"):
+            mask = done_mask.reshape(done_mask.shape + (1,) * (old.ndim - 1))
+            return jnp.where(mask, new, old)
+        # 非数组叶子，直接用 new（或保持 old 差别不大）
+        return new
+    merged_env = jax.tree.map(merge_tree, new_env_state, reset_env)
+    merged_ts = jax.tree.map(merge_tree, new_ts, reset_ts)
+    merged_actor = jax.tree.map(merge_tree, new_actor_state, reset_actor)
+
     return (
         new_learner_state,  # 更新的
-        new_actor_state,  # 来自 rollout
-        new_ts,  # 来自 rollout
-        new_env_state,  # 来自 rollout
+        merged_actor,  # reset 后的 actor state
+        merged_ts,  # reset 后的 timestep
+        merged_env,  # reset 后的 env state
         new_reward_norm_state,  # 更新的
         new_agent_net_state,  # 来自 unroll
         logs,  # 来自 loss_fn
@@ -627,15 +649,16 @@ def jitted_partial_reset(env_state, ts, actor_state, done_mask, rngs, env, agent
     vmap_actor = jax.vmap(agent.initial_actor_state)
     new_actor = vmap_actor(rngs)
 
-    def sel(old, new):
-        mask = done_mask[..., *([None] * (old.ndim - 1))]
-        return jnp.where(mask, new, old)
+    def merge(old, new):
+        if hasattr(old, "ndim"):
+            mask = done_mask.reshape(done_mask.shape + (1,) * (old.ndim - 1))
+            return jnp.where(mask, new, old)
+        return new
 
-    return (
-        jax.tree.map(sel, env_state, new_env),
-        jax.tree.map(sel, ts, new_ts),
-        jax.tree.map(sel, actor_state, new_actor)
-    )
+    env_out = jax.tree.map(merge, env_state, new_env)
+    ts_out = jax.tree.map(merge, ts, new_ts)
+    actor_out = jax.tree.map(merge, actor_state, new_actor)
+    return env_out, ts_out, actor_out
 
 
 @jax.jit
@@ -654,7 +677,7 @@ def get_valid_moves_mask(board):
 
 
 def run_eval(params, agent_hk_network, initial_actor_state_fn, env, env_step, env_reset, mask_fn, rng, step,
-             verbose=False):
+             verbose=False, capture_frames=False):
     """(v5.1) 评估函数 - 更新了签名以减少对全局 agent 的依赖"""
 
     # JIT 编译 agent._network.one_step
@@ -663,12 +686,15 @@ def run_eval(params, agent_hk_network, initial_actor_state_fn, env, env_step, en
     state, ts = env_reset(rng)
     actor_state = initial_actor_state_fn(rng)
     score, moves = 0., 0
+    frames = []
     if verbose: print(f"\n--- 评估开始 (Step {step}) ---")
 
     while True:
         # jittable_2048 环境状态是 EnvState(state=array([B, 4, 4]), rng=...)
         # 评估 batch=1, 所以索引是 [0, 0]
         bd = state.state[0].squeeze(0)
+        if capture_frames:
+            frames.append(np.array(bd))
 
         if ts.step_type[0] == StepType.LAST:
             if verbose: print(f"评估结束 | 得分 {score:.0f} | 最大 {int(2 ** jnp.max(bd))}")
@@ -693,7 +719,7 @@ def run_eval(params, agent_hk_network, initial_actor_state_fn, env, env_step, en
         if moves > 1e5:  # 安全中断
             if verbose: print("评估超过 100k 步, 终止")
             break
-    return score, int(2 ** jnp.max(bd)), moves
+    return score, int(2 ** jnp.max(bd)), moves, frames
 
 
 # --------------------------------------------------------------
@@ -704,12 +730,18 @@ def main():
 
     CFG = config_dict.ConfigDict({
         # 训练
-        'num_train_steps': 1000,
-        'batch_size': 32,
-        'rollout_len': 128,
-        'learning_rate': 1e-3,
-        'grad_clip_norm': 2.0,
+        'num_train_steps': 200000,
+        'batch_size': 64,
+        'rollout_len': 256,
+        'learning_rate': 5e-4,
+        'warmup_steps': 4000,
+        'weight_decay': 1e-4,
+        'grad_clip_norm': 1.0,
         'use_action_mask': True,
+        'base_seed': 42,
+        'adv_clip': 5.0,
+        'epsilon_start': 0.1,
+        'epsilon_end': 0.05,
 
         # v5.1: 混合比例调度
         'imitation_init_lambda': 1.0,
@@ -720,11 +752,11 @@ def main():
         'reward_norm_ema_alpha': 0.99,
 
         # 评估
-        'eval_every_env_steps': 64000,
-        'eval_num_games': 1,
+        'eval_every_env_steps': 16000,
+        'eval_num_games': 8,
 
         # 日志
-        'log_every_steps': 200,
+        'log_every_steps': 500,
         'save_path': 'hybrid_adaptive_2048_v5.1.npz',
         'best_path': 'hybrid_adaptive_2048_v5.1_best.npz',
 
@@ -736,6 +768,25 @@ def main():
         'num_heads': 2,
         'embed_dim': 96,
     })
+    # 日志目录
+    LOG_DIR = Path("logs")
+    LOG_DIR.mkdir(exist_ok=True)
+    TRAIN_LOG = LOG_DIR / "train_log.csv"
+    EVAL_LOG = LOG_DIR / "eval_log.csv"
+    ART_DIR = Path("artifacts")
+    ART_DIR.mkdir(exist_ok=True)
+    CKPT_DIR = Path("checkpoints")
+    CKPT_DIR.mkdir(exist_ok=True)
+
+    # 沙盒模式：用于快速冒烟测试（降低计算量/显存需求）
+    if os.environ.get("SANDBOX_RUN", "0") == "1":
+        CFG.num_train_steps = 4
+        CFG.batch_size = 2
+        CFG.rollout_len = 16
+        CFG.eval_every_env_steps = 512
+        CFG.eval_num_games = 1
+        CFG.warmup_steps = 50
+        print("⚠️  SANDBOX_RUN=1: 使用轻量配置用于冒烟测试")
     print("=" * 60, "\n2048 True Hybrid (v5.1) 训练启动\n", "=" * 60)
     print(CFG)
     print("=" * 60)
@@ -759,16 +810,36 @@ def main():
     # ---- 3. Agent (轻量版) ----
     settings = get_settings_disco()
 
-    settings.net_settings.name = "axial_transformer"
-    settings.net_settings.net_args = dict(
-        model_arch_name='lstm',
-        head_w_init_std=CFG.head_w_init_std,
-        model_kwargs=dict(head_mlp_hiddens=CFG.mlp_hiddens, lstm_size=CFG.lstm_size),
-        num_layers=CFG.num_layers,
-        num_heads=CFG.num_heads,
-        embed_dim=CFG.embed_dim,
-        mlp_ratio=2.0, qkv_bias=True, drop_rate=0.0
-    )
+    model_kind = os.environ.get("MODEL_KIND", "axial").lower()
+    if model_kind == "cnn":
+        settings.net_settings.name = "cnn"
+        settings.net_settings.net_args = dict(
+            head_w_init_std=CFG.head_w_init_std,
+            conv_channels=(128, 256),
+            mlp_hiddens=CFG.mlp_hiddens,
+            use_attention=True,
+            model_arch_name='mlp',
+            model_kwargs=dict(head_mlp_hiddens=CFG.mlp_hiddens, lstm_size=CFG.lstm_size),
+        )
+        print("✓ 使用 CNN 架构 (conv_channels=(128,256))")
+    else:
+        settings.net_settings.name = "axial_transformer"
+        settings.net_settings.net_args = dict(
+            model_arch_name='lstm',
+            head_w_init_std=CFG.head_w_init_std,
+            model_kwargs=dict(head_mlp_hiddens=CFG.mlp_hiddens, lstm_size=CFG.lstm_size),
+            num_layers=CFG.num_layers,
+            num_heads=CFG.num_heads,
+            embed_dim=CFG.embed_dim,
+            mlp_ratio=2.0, qkv_bias=True, drop_rate=0.0
+        )
+        print("✓ 使用 AxialTransformer 架构")
+
+    # 依据架构调整权重文件名
+    CFG.save_path = f"hybrid_adaptive_2048_v5.1_{model_kind}.npz"
+    CFG.best_path = f"hybrid_adaptive_2048_v5.1_{model_kind}_best.npz"
+    CKPT_PATH = CKPT_DIR / f"ckpt_{model_kind}.pkl"
+
     settings.learning_rate = CFG.learning_rate
     # agent.py:122 max_abs_update
     settings.max_abs_update = CFG.grad_clip_norm
@@ -792,42 +863,73 @@ def main():
     ac_settings = get_settings_actor_critic()
     ac_hyper_params = ac_settings.hyper_params.to_dict()
 
-    # 3. 优化器 (从 agent 内部获取)
-    optimizer = optax.chain(
-        optimizers.scale_by_adam_sg_denom(),
-        optax.clip(max_delta=settings.max_abs_update),
-        optax.scale(-settings.learning_rate),
+    # 3. 优化器 (余弦调度 + AdamW + 全局范数裁剪)
+    decay_steps = max(int(CFG.num_train_steps), int(CFG.warmup_steps) + 1)
+    scheduler = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=CFG.learning_rate,
+        warmup_steps=CFG.warmup_steps,
+        decay_steps=decay_steps,
+        end_value=CFG.learning_rate * 0.1
     )
-    print("✓ 手动实例化 Disco 规则和优化器")
+    print(f"✓ LR schedule: warmup {CFG.warmup_steps}, decay_steps {decay_steps}")
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(CFG.grad_clip_norm),
+        optax.adamw(learning_rate=scheduler, weight_decay=CFG.weight_decay),
+    )
+    print("✓ 手动实例化 Disco 规则和优化器 (AdamW + Cosine LR + Clip)")
 
     # ---- 4. 初始化状态 ----
-    seed = int(time.time());
+    seed = int(os.environ.get("BASE_SEED", CFG.base_seed));
     print(f"✓ 随机种子: {seed}")
     key = jax.random.PRNGKey(seed);
     key, er, lr, ar = jax.random.split(key, 4)
 
-    env_state, ts = env.reset(er)
+    # ---- 尝试断点恢复 ----
+    resume = os.environ.get("RESUME", "1") == "1" and CKPT_PATH.exists()
+    if resume:
+        try:
+            with CKPT_PATH.open("rb") as f:
+                ckpt = pickle.load(f)
+            learner_state = ckpt["learner_state"]
+            actor_state = ckpt["actor_state"]
+            env_state = ckpt["env_state"]
+            ts = ckpt["ts"]
+            reward_norm_state = ckpt["reward_norm_state"]
+            last_eval_idx = ckpt.get("last_eval_idx", -1)
+            best_score = ckpt.get("best_score", -float("inf"))
+            env_steps = ckpt.get("env_steps", 0)
+            step_start = ckpt.get("step", 0)
+            print(f"✓ 断点恢复: step={step_start}, env_steps={env_steps}")
+        except Exception as e:
+            print(f"✗ 断点恢复失败，重新开始: {e}")
+            resume = False
 
-    # 手动初始化 LearnerState (来自 agent.initial_learner_state)
-    net_rng, state_rng = jax.random.split(lr)
-    dummy_obs = agent._dummy_obs(batch_size=1)
-    should_reset = agent._dummy_should_reset(batch_size=1)
-    _params, _ = agent._network.init(net_rng, dummy_obs, should_reset)
-    _opt_state = optimizer.init(_params)  # <-- 使用我们的 v5.1 优化器
-    _meta_state = agent.update_rule.init_meta_state(rng=state_rng, params=_params)
-    learner_state = agent_lib.LearnerState(params=_params, opt_state=_opt_state, meta_state=_meta_state)
-
-    actor_state = agent.initial_actor_state(ar)
-    reward_norm_state = init_reward_norm_state()
+    if not resume:
+        env_state, ts = env.reset(er)
+        # 手动初始化 LearnerState (来自 agent.initial_learner_state)
+        net_rng, state_rng = jax.random.split(lr)
+        dummy_obs = agent._dummy_obs(batch_size=1)
+        should_reset = agent._dummy_should_reset(batch_size=1)
+        _params, _ = agent._network.init(net_rng, dummy_obs, should_reset)
+        _opt_state = optimizer.init(_params)  # <-- 使用我们的 v5.1 优化器
+        _meta_state = agent.update_rule.init_meta_state(rng=state_rng, params=_params)
+        learner_state = agent_lib.LearnerState(params=_params, opt_state=_opt_state, meta_state=_meta_state)
+        actor_state = agent.initial_actor_state(ar)
+        reward_norm_state = init_reward_norm_state()
+        last_eval_idx = -1
+        best_score = -float("inf")
+        env_steps = 0
+        step_start = 0
 
     anneal_steps = int(CFG.num_train_steps * CFG.imitation_anneal_steps_ratio)
-    lambda_schedule = optax.linear_schedule(
+    lambda_schedule = optax.cosine_decay_schedule(
         init_value=CFG.imitation_init_lambda,
-        end_value=CFG.imitation_end_lambda,
-        transition_steps=anneal_steps
+        decay_steps=anneal_steps,
+        alpha=CFG.imitation_end_lambda / CFG.imitation_init_lambda
     )
     print(
-        f"✓ 混合比例: {CFG.imitation_init_lambda * 100}% -> {CFG.imitation_end_lambda * 100}% (在 {anneal_steps} 步内)")
+        f"✓ 混合比例 (cosine): {CFG.imitation_init_lambda * 100}% -> {CFG.imitation_end_lambda * 100}% (在 {anneal_steps} 步内)")
 
     # ---- 5. JIT 编译 ----
     jitted_train = _train_step_v5_1
@@ -838,31 +940,32 @@ def main():
     mask_eval = jax.jit(get_valid_moves_mask)
 
     # ---- 编译预热 ----
-    print("编译预热中 (v5.1 JIT)...")
-    _ = jitted_train(
-        learner_state, actor_state, ts, env_state,
-        reward_norm_state,
-        ar, lr,
-        1.0,  # 预热使用模式 1.0 (Imitation)
-        teacher_params,
-        disco_hyper_params,  # 动态参数
-        ac_hyper_params,  # 动态参数
-        # --- 静态对象 ---
-        env, CFG.rollout_len, agent.actor_step, CFG.use_action_mask,
-        CFG.reward_norm_ema_alpha,
-        agent._network,  # <--- 传递 Haiku 变换
-        disco_rule,
-        optimizer,
-    )
-    print("✓ 预热完成")
+    if CFG.num_train_steps > 10:  # 沙盒模式跳过预热以节省时间
+        print("编译预热中 (v5.1 JIT)...")
+        _ = jitted_train(
+            learner_state, actor_state, ts, env_state,
+            reward_norm_state,
+            ar, lr,
+            1.0,  # 预热使用模式 1.0 (Imitation)
+            teacher_params,
+            disco_hyper_params,  # 动态参数
+            ac_hyper_params,  # 动态参数
+            # --- 静态对象 ---
+            env, CFG.rollout_len, agent.actor_step, CFG.use_action_mask,
+            CFG.reward_norm_ema_alpha,
+            agent._network,  # <--- 传递 Haiku 变换
+            disco_rule,
+            optimizer,
+        )
+        print("✓ 预热完成")
 
     # ---- 6. 训练循环 ----
     best_score = -float("inf");
-    env_steps = 0;
-    last_eval_idx = -1;
+    env_steps = env_steps if resume else 0;
+    last_eval_idx = last_eval_idx if resume else -1;
     last_t = time.perf_counter()
 
-    pbar = tqdm.tqdm(range(CFG.num_train_steps))
+    pbar = tqdm.tqdm(range(step_start, CFG.num_train_steps), disable=os.environ.get("TQDM_OFF")=="1")
 
     try:
         for step in pbar:
@@ -941,6 +1044,14 @@ def main():
                     f"SPS:{int(sps)}"
                 )
 
+                # 写入 CSV 日志（实时可视化使用）
+                with TRAIN_LOG.open("a", newline="") as f:
+                    w = csv.writer(f)
+                    if f.tell() == 0:
+                        w.writerow(["step", "loss", "lambda", "raw_reward", "mean_reward", "sps"])
+                    w.writerow([step, loss, float(lambda_imitation), total_raw_r,
+                                float(reward_norm_state.mean), int(sps)])
+
             # ---- 评估 (按环境步数) ----
             current_eval_idx = env_steps // CFG.eval_every_env_steps
             if current_eval_idx > last_eval_idx:
@@ -950,9 +1061,10 @@ def main():
                 eval_params = jax.device_get(learner_state.params)
 
                 avg_score, max_tile = 0., 0
+                latest_frames = []
                 for i in range(CFG.eval_num_games):
                     key, ev_key = jax.random.split(key)
-                    score, tile, _ = run_eval(
+                    score, tile, _, frames = run_eval(
                         eval_params,
                         agent._network,  # <--- 传递 agent 的 haiku transform
                         agent.initial_actor_state,  # <--- 传递 agent 的状态初始化函数
@@ -962,16 +1074,69 @@ def main():
                         mask_eval,
                         ev_key,
                         step,
-                        verbose=(i == 0)  # 只打印第一局
+                        verbose=(i == 0),  # 只打印第一局
+                        capture_frames=(i == 0)
                     )
                     avg_score += score
                     max_tile = max(max_tile, tile)
+                    if i == 0:
+                        latest_frames = frames
 
                 avg_score /= CFG.eval_num_games
                 print(f"\n{'=' * 60}")
                 print(f"评估 @ Step {step} (EnvSteps {env_steps})")
                 print(f"  平均得分: {avg_score:.1f} | 最高方块: {max_tile}")
                 print(f"{'=' * 60}\n")
+
+                artifact_path = None
+                if latest_frames:
+                    artifact_path = ART_DIR / f"step_{env_steps}_{model_kind}.gif"
+                    try:
+                        # 生成彩色高分辨率帧 (每格 64x64 像素)
+                        cell = 64
+                        palette = {
+                            0: (205, 193, 180),
+                            1: (238, 228, 218),
+                            2: (237, 224, 200),
+                            3: (242, 177, 121),
+                            4: (245, 149, 99),
+                            5: (246, 124, 95),
+                            6: (246, 94, 59),
+                            7: (237, 207, 114),
+                            8: (237, 200, 80),
+                            9: (237, 197, 63),
+                            10: (237, 194, 46),
+                        }
+                        def color_for(v):
+                            if v in palette:
+                                return palette[v]
+                            # 渐变：更大 tile 逐步加深红色
+                            t = min(v - 10, 10)
+                            r = min(255, 180 + t * 7)
+                            g = max(60, 194 - t * 8)
+                            b = max(30, 46 - t * 2)
+                            return (r, g, b)
+
+                        imgs = []
+                        for b in latest_frames:
+                            bnp = np.array(b)
+                            rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+                            for r in range(4):
+                                for c in range(4):
+                                    rgb[r, c] = color_for(int(bnp[r, c]))
+                            # 上采样到高分辨率
+                            big = np.kron(rgb, np.ones((cell, cell, 1), dtype=np.uint8))
+                            imgs.append(big)
+                        imageio.mimsave(artifact_path, imgs, duration=0.12)
+                        print(f"✓ 评估 GIF 已保存 {artifact_path}")
+                    except Exception as e:
+                        print(f"? 保存评估 GIF 失败: {e}")
+
+                with EVAL_LOG.open("a", newline="") as f:
+                    w = csv.writer(f)
+                    if f.tell() == 0:
+                        w.writerow(["env_steps", "step", "avg_score", "max_tile", "artifact"])
+                    w.writerow([env_steps, step, avg_score, max_tile, str(artifact_path) if artifact_path else ""])
 
                 # 保存
                 try:
@@ -989,6 +1154,25 @@ def main():
                     except Exception as e:
                         print(f"✗ 保存最佳权重失败: {e}")
 
+                # 保存检查点（含优化器/状态/步数）
+                try:
+                    ckpt = dict(
+                        learner_state=learner_state,
+                        actor_state=actor_state,
+                        env_state=env_state,
+                        ts=ts,
+                        reward_norm_state=reward_norm_state,
+                        last_eval_idx=last_eval_idx,
+                        best_score=best_score,
+                        env_steps=env_steps,
+                        step=step + 1,
+                        key=key,
+                    )
+                    with CKPT_PATH.open("wb") as f:
+                        pickle.dump(ckpt, f)
+                except Exception as e:
+                    print(f"✗ 保存检查点失败: {e}")
+
     except KeyboardInterrupt:
         print("\n\n检测到中断，正在保存...")
     finally:
@@ -1001,6 +1185,25 @@ def main():
             print(f"✓ 最终权重已保存: {CFG.save_path}")
         except Exception as e:
             print(f"✗ 紧急保存失败: {e}")
+        # 最终检查点
+        try:
+            ckpt = dict(
+                learner_state=learner_state,
+                actor_state=actor_state,
+                env_state=env_state,
+                ts=ts,
+                reward_norm_state=reward_norm_state,
+                last_eval_idx=last_eval_idx,
+                best_score=best_score,
+                env_steps=env_steps,
+                step=step + 1,
+                key=key,
+            )
+            with CKPT_PATH.open("wb") as f:
+                pickle.dump(ckpt, f)
+            print(f"✓ 检查点已保存: {CKPT_PATH}")
+        except Exception as e:
+            print(f"✗ 保存检查点失败: {e}")
 
     print("=" * 60, "\n训练完成\n最佳得分:", best_score, "\n", "=" * 60)
 

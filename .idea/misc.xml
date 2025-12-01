@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.12 (2048)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.12 (disco-RL)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="jax-gpu WSL (Ubuntu-22.04): (null)" project-jdk-type="Python SDK" />
 </project>

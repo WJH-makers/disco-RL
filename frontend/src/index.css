@@ -1,0 +1,36 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Inter", "Segoe UI", sans-serif; background: #f7f2ec; color: #2f2a28; }
+h1 { margin: 0 0 12px; font-size: 22px; }
+h3 { margin: 0 0 8px; font-size: 16px; }
+
+.layout { display: flex; gap: 24px; padding: 24px; align-items: flex-start; }
+.column { display: flex; flex-direction: column; gap: 12px; }
+.board { width: 320px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; background: #bbada0; padding: 8px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
+.tile { height: 70px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 22px; color: #776e65; transition: transform 0.1s ease; }
+.tile:not(:empty) { transform: scale(1.02); }
+
+.controls { display: flex; gap: 10px; align-items: center; }
+button { padding: 8px 12px; border: none; border-radius: 8px; background: #4d90fe; color: #fff; cursor: pointer; font-weight: 600; }
+button:hover { background: #3974d0; }
+.muted { color: #8a7f77; font-size: 12px; }
+.error { color: #d64545; font-size: 12px; }
+
+.panel { width: 280px; background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 12px 30px rgba(0,0,0,0.08); display: flex; flex-direction: column; gap: 10px; }
+.bar { display: flex; align-items: center; gap: 8px; }
+.arrow { width: 20px; text-align: center; font-weight: 700; }
+.arrow.best { color: #4d90fe; }
+.meter-wrap { flex: 1; background: #e6dfd7; border-radius: 8px; height: 10px; overflow: hidden; }
+.meter { height: 100%; border-radius: 8px; transition: width 0.25s ease; }
+.pct { width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+.value { font-weight: 700; }
+.meta { display: flex; gap: 10px; font-size: 12px; color: #5d554e; }
+.meta span { background: #f3ede6; padding: 2px 6px; border-radius: 6px; }
+.hint { font-size: 12px; color: #7a7169; }
+.artifact { margin-top: 8px; }
+.gif { width: 100%; border-radius: 8px; border: 1px solid #e6dfd7; }
+code { background: #f0e9df; padding: 2px 4px; border-radius: 4px; }
+
+@media (max-width: 768px) {
+  .layout { flex-direction: column; }
+  .panel, .board { width: 100%; }
+}

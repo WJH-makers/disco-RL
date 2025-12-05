@@ -48,3 +48,24 @@
 - `frontend/`：Vite React 看板（推理可视化 + 训练指标）。
 - `policy_bench.py`：零预测策略基准。
 - `smoke_check.py`：冒烟测试。 
+
+## 9. 进阶：教师（超网络）训练思路
+默认教师 Disco103 是冻结的；若环境变化或想进一步提升，可开启可训练教师：
+- 推荐配置（新增到 CFG 或环境变量）：
+  - `train_teacher=True`
+  - `teacher_lr=1e-4`
+  - `teacher_update_every=5`（教师低频更新，学生每步更新）
+  - `teacher_kl_reg=1e-3`（KL(student‖teacher) 正则，防漂移）
+  - `teacher_grad_clip=1.0`
+- 实现要点（按需在 `train_2048.py` 中改）：
+  - 将 `teacher_params` 设为可训练，独立 `teacher_optimizer`（Adam/AdamW，小 LR）。
+  - JIT 内：若 `update_teacher` 为 True，则对教师 loss（可用同一 imitation+RL 目标）求梯度，更新教师参数；否则直接 passthrough。
+  - 低频更新：host 循环用 `step % teacher_update_every == 0` 控制；KL 正则仅在更新步生效。
+  - 断点：在 ckpt 中保存 `teacher_params` 与 `teacher_opt_state`。
+
+## 10. 在现有做法上的优化建议
+- **expectimax 预热**：已默认用 expectimax 生成 1024 条高质量样本做行为克隆预热，可调 `EXPECTIMAX_WARMUP_SAMPLES/DEPTH/TIMEOUT`。
+- **搜索+估值融合**：推理端可用 expectimax(3–4 ply) + 启发式 + n-tuple + 模型 value 融合叶子估值（`serve_infer.py` 已内置启发式+n-tuple，留接口加模型值）。
+- **批评估与吞吐**：eval 并行多局（默认 8），训练 batch/rollout 大一些（64、256）；显存不足时用梯度累积替代。
+- **稳定性**：动作用掩码、`auto_reset=False` 与教师保持一致；λ 退火放缓，ε 固定 0.05–0.1 防早收敛；grad clip、nan_to_num 已启用。
+- **断点续训**：默认自动恢复 (`RESUME=1`)，重头用 `RESUME=0`；权重+状态+优化器+环境/actor 状态均存 `checkpoints/ckpt_<arch>.pkl`。

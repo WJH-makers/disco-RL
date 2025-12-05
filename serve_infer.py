@@ -91,6 +91,19 @@ def empty_cells(board: List[List[int]]):
             if board[r][c] == 0:
                 yield r, c
 
+# ---------------------------- n-tuple 简易估值 ---------------------------- #
+# 小型 4x4 n-tuple 权重，作为稳定叶子估值（表查，速度快）
+_NTUPLE_WEIGHTS = np.array([
+    [15, 14, 13, 12],
+    [8,  9,  10, 11],
+    [7,  6,  5,  4],
+    [0,  1,  2,  3]
+], dtype=np.float32)
+
+def ntuple_value(board):
+    b = np.array(board, dtype=np.float32)
+    return float(np.sum(b * _NTUPLE_WEIGHTS))
+
 
 # ---------------------------- 估值函数 ---------------------------- #
 def heuristic_value(board: List[List[int]]) -> float:
@@ -130,7 +143,11 @@ def heuristic_value(board: List[List[int]]) -> float:
 
 # 如需接入 CNN，请实现 cnn_value(board) 并在 evaluate() 中调用
 def evaluate(board: List[List[int]]) -> float:
-    return heuristic_value(board)
+    # 融合 heuristic + n-tuple，可加权；若想加入模型 value，可在此加权
+    w_h, w_n, w_m = 0.3, 0.7, 0.0
+    v = w_h * heuristic_value(board) + w_n * ntuple_value(board)
+    # 如果你接入模型估值，赋值 w_m>0 并加上 model_value(board)
+    return float(v)
 
 
 # ---------------------------- Expectimax 搜索 ---------------------------- #

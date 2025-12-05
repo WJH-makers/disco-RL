@@ -26,6 +26,8 @@ import csv
 from pathlib import Path
 import imageio
 import pickle
+import math
+import random
 from functools import partial
 from ml_collections import config_dict
 from dm_env import StepType
@@ -67,6 +69,109 @@ def unflatten_params(flat_npz):
 
         out.setdefault(path, {})[leaf] = flat_npz[k]
     return out
+
+
+# ====================================================
+# Expectimax 简易实现（离线 BC 预热用）
+# ====================================================
+def ex_slide(line):
+    tiles = [v for v in line if v]
+    out, score, i = [], 0, 0
+    while i < len(tiles):
+        if i + 1 < len(tiles) and tiles[i] == tiles[i + 1]:
+            v = tiles[i] + 1
+            out.append(v)
+            score += 2 ** v
+            i += 2
+        else:
+            out.append(tiles[i])
+            i += 1
+    out += [0] * (4 - len(out))
+    return out, score
+
+def ex_move(board, a):
+    b = [row[:] for row in board]
+    score = 0
+    if a in (0, 2):
+        for c in range(4):
+            col = [b[r][c] for r in range(4)]
+            if a == 2:
+                col.reverse()
+            merged, s = ex_slide(col)
+            if a == 2:
+                merged.reverse()
+            for r in range(4):
+                b[r][c] = merged[r]
+            score += s
+    else:
+        for r in range(4):
+            row = b[r][:]
+            if a == 1:
+                row.reverse()
+            merged, s = ex_slide(row)
+            if a == 1:
+                merged.reverse()
+            b[r] = merged
+            score += s
+    return b, score
+
+def ex_valid(board):
+    return [ex_move(board, a)[0] != board for a in range(4)]
+
+def ex_empty(board):
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                yield r, c
+
+def ex_heuristic(board):
+    b = np.array(board, dtype=np.int32)
+    empties = np.count_nonzero(b == 0)
+    mono = -np.sum(np.abs(np.diff(b, axis=0))) - np.sum(np.abs(np.diff(b, axis=1)))
+    smooth = -(np.abs(np.diff(b, axis=0)).sum() + np.abs(np.diff(b, axis=1)).sum())
+    max_tile = b.max()
+    corners = [b[0,0], b[0,3], b[3,0], b[3,3]]
+    corner = 10.0 if max_tile in corners else 0.0
+    merge_p = np.sum(b[:, :-1] == b[:, 1:]) + np.sum(b[:-1, :] == b[1:, :])
+    return 2.0 * empties + 1.0 * mono + 0.1 * smooth + 3.0 * corner + 0.5 * merge_p
+
+def ex_expectimax(board, depth, cache, timeout_ms, start_t):
+    key = (tuple(np.ravel(board)), depth, "M")
+    if key in cache:
+        return cache[key]
+    if depth == 0 or time.perf_counter() - start_t > timeout_ms / 1000:
+        v = ex_heuristic(board)
+        cache[key] = v
+        return v
+    best = -1e9
+    valid = ex_valid(board)
+    if not any(valid):
+        return ex_heuristic(board)
+    for a in range(4):
+        if not valid[a]:
+            continue
+        child, _ = ex_move(board, a)
+        val = ex_chance(child, depth - 1, cache, timeout_ms, start_t)
+        best = max(best, val)
+    cache[key] = best
+    return best
+
+def ex_chance(board, depth, cache, timeout_ms, start_t):
+    key = (tuple(np.ravel(board)), depth, "C")
+    if key in cache:
+        return cache[key]
+    empties = list(ex_empty(board))
+    if not empties:
+        return ex_heuristic(board)
+    acc = 0.0
+    for r, c in empties:
+        for tile, p in ((1, 0.9), (2, 0.1)):
+            b2 = [row[:] for row in board]
+            b2[r][c] = tile
+            acc += p * ex_expectimax(b2, depth, cache, timeout_ms, start_t)
+    v = acc / len(empties)
+    cache[key] = v
+    return v
 
 
 # ====================================================
@@ -767,6 +872,11 @@ def main():
         'num_layers': 2,
         'num_heads': 2,
         'embed_dim': 96,
+        # expectimax 生成数据 / 叶子估值
+        'expectimax_warmup_samples': int(os.environ.get("EXPECTIMAX_WARMUP_SAMPLES", "1024")),
+        'expectimax_depth': int(os.environ.get("EXPECTIMAX_DEPTH", "3")),
+        'expectimax_timeout_ms': int(os.environ.get("EXPECTIMAX_TIMEOUT", "50")),
+        'expectimax_batch': int(os.environ.get("EXPECTIMAX_BATCH", "256")),
     })
     # 日志目录
     LOG_DIR = Path("logs")

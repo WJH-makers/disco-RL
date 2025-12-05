@@ -1,82 +1,119 @@
-# 项目概览：使用 DiscoRL 训练 2048 CNN Agent
+# 2048 (DiscoRL) 项目使用手册
 
-这是一个基于 Google DeepMind 的 **DiscoRL** 框架（）实现的强化学习项目，专门用于训练一个 **卷积神经网络 (CNN)** 来玩 **2048** 游戏。
+## 概览
 
-项目的核心思想是利用 DiscoRL 的“元评估 (Meta-evaluation)”功能（）。我们**不**是从零开始“元训练 (Meta-training)”一个新的强化学习规则（），而是加载一个由 DiscoRL 发现的、SOTA 的“教师”规则（`Disco103`），并用它来指导一个自定义 CNN 智能体（“学生”）的学习。
-
-## 核心组件
-
-该项目由以下几个关键的 Python 文件组成：
+本项目基于 Google DeepMind 的 DiscoRL 框架，使用冻结教师规则（Disco103）+ 学生网络（CNN 或 AxialTransformer）来玩 2048。支持 expectimax 预热、自动断点续训、实时指标与前端可视化。
 
 ---
 
-### 1. `jittable_2048.py` - 2048 JAX 原生环境
+## 快速开始（环境）
 
-这是 2048 游戏的核心实现，完全用 JAX 编写，使其可以被 JIT 编译和 `vmap` 批处理。
-
-* **`_SingleStream2048`**:
-    * 实现了 2048 游戏的**单局**逻辑。
-    * `_slide_and_merge_one_line`: 游戏的核心算法，处理单行/单列的滑动与合并，并返回得分。
-    * `step`: 接收一个动作（0-3），并根据动作调用 `_slide_and_merge_one_line` 来更新棋盘。
-    * `render`: 将 `(4, 4)` 的棋盘（存储的是 2 的指数，如 1=2, 2=4, ...）转换为 `(4, 4, 16)` 的 **one-hot** 编码，作为神经网络的输入。
-    * `is_terminal`: 检查游戏是否结束（没有空格且无法合并）。
-* **`BatchedJittable2048Environment`**:
-    * 继承自 `batched_jittable_env.py` 中的包装器。
-    * **关键功能**: 增加了一个 `auto_reset: bool` 标志。这允许我们在**训练**时（`auto_reset=True`）自动重置结束的游戏，但在**评估**时（`auto_reset=False`）保持游戏结束的状态以查看最终棋盘。
+- Python 3.11+；建议虚拟环境：`python -m venv .venv && source .venv/bin/activate` 或 conda。
+- 安装依赖：`pip install -e .`，以及 `pip install tensorboardX imageio fastapi uvicorn`（服务/GIF）。
+- GPU 版 JAX：按 CUDA 版本安装 `jax[cudaXX_pip]`。
+- 前端：`cd frontend && npm install`。
 
 ---
 
-### 2. `nets.py` - 自定义 CNN 网络
+## 训练入口（默认自动断点 + 预热）
 
-这个文件是 DiscoRL 的网络工厂（），我们对它进行了修改，**添加了对 CNN 的支持**。
+- Transformer：`python train_2048.py`
+- CNN：`MODEL_KIND=cnn python train_2048.py`
+- 冒烟：`SANDBOX_RUN=1 TQDM_OFF=1 python train_2048.py`
+- 强制重头：`RESUME=0 python train_2048.py`（默认 `RESUME=1` 自动加载 `checkpoints/ckpt_<arch>.pkl`）
+- 预热：默认用 expectimax 生成 1024 样本做 BC 预热；关闭：`EXPECTIMAX_WARMUP_SAMPLES=0`。
 
-* **`get_network`**: 工厂函数，通过 `name` 字符串（如 `'mlp'` 或 `'cnn'`）来构造网络。
-* **`class CNN(MLPHeadNet)`**:
-    * 这是我们为 2048 定制的 CNN 模型。
-    * 它重写了 `_embedding_pass` 方法。
-    * `_embedding_pass` 接收 `inputs['observation']`（形状为 `[B, 4, 4, 16]` 的棋盘）。
-    * 它使用 `hk.Conv2D` 卷积层（例如，通道数为 `(128, 256)`）来提取特征。
-    * 最后，它将卷积特征 `Flatten` 并通过一个 `hk.nets.MLP`（例如 `(256,)`）来生成最终的嵌入 (embedding)。
-    * 这个嵌入随后被 `MLPHeadNet` 基类用于计算 `logits`（策略）和 `value`（价值）。
+输出：权重 `hybrid_adaptive_2048_v5.1_<arch>.npz/_best.npz`，日志 `logs/*.csv`，GIF `artifacts/*.gif`，断点 `checkpoints/ckpt_<arch>.pkl`。
 
 ---
 
-### 3. `train_2048.py` - 核心训练与评估脚本
+## 推理与指标服务
 
-这是项目的**主执行文件**。它配置并运行整个训练-评估循环。
+```
+uvicorn serve_infer:app --port 8000 --reload
+```
 
-* **Agent 配置**:
-    * 它加载 DiscoRL 的 `agent.py`（）。
-    * **关键**: 它将 `agent_settings.net_settings.name` 设置为 `'cnn'`，并传入 `conv_channels` 和 `mlp_hiddens` 等参数，以确保 Agent 使用我们自定义的 CNN。
-* **"教师"规则**:
-    * 它从 `disco_103.npz` 文件中加载预训练的 DiscoRL 规则权重。
-    * 这些权重**不是**用于 CNN，而是作为 `update_rule_params` 传递给 `agent.learner_step`。
-    * 这意味着我们的 CNN（学生）正在**学习模仿 Disco103 规则（教师）所产生的更新目标**。
-* **训练循环 (`_sample_step` / `_learn_step`)**:
-    * `_sample_step`: 调用 `unroll_jittable_actor` 来运行游戏并收集 `rollout_len`（例如 2048）步的经验。
-    * `unroll_jittable_actor` 被修改为**使用 `auto_reset=False`**。
-    * `_learn_step`: 接收 `actor_rollout` 数据并执行学习步骤。
-    * 在 `_learn_step` 之后，脚本会**手动检查** `timestep.step_type`。如果游戏在上一个 rollout 中结束了，它会手动调用 `env.reset`。
-* **对称性增强 (Symmetry Augmentation)**:
-    * 这是为了解决 2048 棋盘的旋转和翻转对称性问题而添加的**关键功能**。
-    * `apply_symmetries_to_rollout`:
-        * 在 `_learn_step` 中被调用，在数据被送去训练**之前**。
-        * 它接收一批 `actor_rollout`（形状 `[T, B, ...]`，其中 B=1）。
-        * 它生成 8 个对称版本（4 次旋转 + 4 次翻转）的数据。
-        * **同时转换棋盘和动作**: 它不仅使用 `jnp.rot90` 和 `jnp.flip` 转换 `observation`（`[T, B, 4, 4, 16]`），还**必须**转换对应的 `actions` 和 `logits`（例如，将“上”[0] 映射到“左”[2]）。
-        * `tile_actor_state`: 将 RNN 状态 `[B, ...]` 复制 8 次，变为 `[B*8, ...]`。
-        * 最终，`agent.learner_step` 接收到的是 `[T, B*8, ...]` 的批次，从而在一次梯度更新中学会所有 8 种对称性。
-* **评估 (`run_evaluation`)**:
-    * 训练期间会周期性（例如每 500 步）调用此函数。
-    * 它使用一个**单独的评估环境** `eval_env`。
-    * **关键**: 它调用环境的 `step` 函数时，**显式传递 `auto_reset=False`**，确保游戏在结束后不会立即重置。
-    * **动作掩码**: 它调用 `get_valid_moves_mask` 来防止 AI 选择无效的移动。
+- `/infer`：expectimax(3–4 ply 自适应) + 启发式 + n‑tuple 叶子估值，返回 best_move/logits/valid/value/深度/节点数/耗时。
+- `/metrics`：返回最新 train/eval CSV 行与 GIF 路径（前端轮询）。
+
+前端看板：`cd frontend && VITE_API_PROXY=http://localhost:8000 npm run dev`，展示棋盘、动作概率、训练指标、最新评估 GIF。
 
 ---
 
-### 4. `batched_jittable_env.py` - 环境批处理包装器
+## 训练流程——多角度理解
 
-这是一个通用的 DiscoRL 工具文件（）。
+### 时间线视角
 
-* 它提供了一个基类 `BatchedJittableEnvironment`。
-* 它的主要作用是使用 `jax.vmap` 将一个 JAX 原生的**单体**环境（如 `_SingleStream2048`）自动转换为一个**批量**环境，使其能够同时处理多个并行的游戏实例。
+1) **Expectimax 预热**（可关）：生成高质量样本，BC 更新学生。
+2) **主训练循环**：rollout → 奖励归一化 → imitation+RL 混合损失 → AdamW 更新；每 500 步写日志。
+3) **评估**：每 16k 环境步并行 8 局，保存权重/GIF/ckpt。
+4) **断点**：每次评估、结束时写 ckpt；启动默认自动恢复。
+
+### 数据流视角
+
+环境(obs, action_mask) → rollout(scan) → reward norm(EMA) → 网络前向 → loss = λ·L_imitation + L_RL → grad clip + AdamW → 更新 params/opt_state → 部分 reset → 日志/评估/GIF。
+
+### 组件视角
+
+- 环境：`jittable_2048`（one-hot 观测，动作掩码，auto_reset=False）。
+- 网络：CNN 或 AxialTransformer（`MODEL_KIND` 切换）。
+- 教师：Disco103 冻结；学生学习模仿 + RL。
+- 预热：expectimax 行为克隆。
+- 服务/前端：`serve_infer.py` + Vite React 看板。
+
+---
+
+## 数学推理要点（为什么可行）
+
+- 目标函数：对策略 π_θ，损失 `L(θ) = E[ λ_t · L_imitation(π_θ, π_teacher) + L_RL(π_θ) ]`，其中 λ_t∈[0,1] 随时间减小。凸组合保证梯度仍是下降方向，cosine 退火避免突变。
+- 奖励有界（2048 每步有限分），动作掩码强制有效动作；reward norm (EMA) + grad clip + `nan_to_num` 控制梯度范数，提升优化稳定性。
+- 预热（expectimax BC）：先用高质量专家分布 q 生成样本做交叉熵最小化，使 KL(π_θ ‖ q) 降低，减少 compounding error；BC 误差 ε 会线性影响后续期望损失上界 O(ε·T)（DAgger 理论）。
+- RL 分支：`L_RL` 近似 Bellman 目标（值/优势或 Q），在 λ_t 减小时开始主导，纠偏专家的局部次优。
+- 估值与搜索：推理端 expectimax 3–4 ply ≈ 一步 lookahead 的 Bellman backup；叶子估值启发式+n‑tuple 给出稳定下界，降低方差。
+- 收敛直觉：初期高 λ_t 保证快速模仿强教师（减少状态分布漂移）；中后期 RL 校正 + reward norm/clip 抑制梯度爆炸；有限状态/动作下，参数化网络在 Lipschitz 约束下可达到近似最优策略。
+- 简单误差界（直观版）：设 BC 误差 ε，rollout 长度 T，使用掩码避免非法动作，reward 有界 R_max，则策略偏差导致的回报差 ≈ O(ε·T·R_max)；混合训练在初期将 ε 压低，中期 λ_t↓ 时 RL 进一步减少分布偏移。
+
+## 训练/推理流程图
+
+```mermaid
+flowchart TD
+    A[Start] --> B[准备环境<br/>pip install -e .<br/>JAX GPU / 前端 npm install]
+    B --> C[Expectimax 预热<br/>生成样本 -> BC 更新学生<br/>EXPECTIMAX_WARMUP_SAMPLES 控制]
+    C --> D[主训练循环<br/>rollout -> reward norm -> λ·L_imitation+L_RL -> AdamW<br/>log 每500步]
+    D --> E[评估并行8局<br/>每16k env步<br/>保存权重/GIF/ckpt]
+    E --> D
+    D --> F[检查点<br/>ckpt_&lt;arch&gt;.pkl 自动断点恢复]
+    F --> G[推理/服务<br/>uvicorn /infer /metrics<br/>expectimax+启发式+n-tuple]
+    G --> H[前端看板<br/>Vite 轮询 /metrics 显示棋盘/指标/GIF]
+    H --> I[基准/自检<br/>policy_bench.py / smoke_check.py]
+```
+
+---
+
+## 进阶：教师（超网络）可训练方案（可选）
+
+- 新增开关：`train_teacher=True`，`teacher_lr=1e-4`，`teacher_update_every=5`，`teacher_kl_reg=1e-3`，`teacher_grad_clip=1.0`。
+- 思路：教师低频、小步率更新，独立优化器；在更新步加入 KL(student‖teacher) 正则，防漂移；ckpt 保存教师参数/opt_state。
+
+---
+
+## 进一步优化建议
+
+- 推理：叶子估值可加模型 value 融合权重；必要时查表微优化（特定局面直接用 lookup）。
+- 吞吐：单 GPU 用大 batch/rollout；评估并行多局；减少日志同步。
+- 稳定性：保持动作掩码、auto_reset=False 与教师一致；ε 固定 0.05–0.1 防早收敛；梯度/损失钳制已启用。
+
+---
+
+## 目录速览
+
+- `train_2048.py`：训练/评估，自动断点，expectimax 预热，日志/GIF/ckpt。
+- `serve_infer.py`：推理+指标，expectimax + 启发式 + n‑tuple 叶子估值。
+- `disco_rl/`：环境、网络、更新规则。
+- `artifacts/`：评估 GIF。
+- `logs/`：训练/评估 CSV。
+- `checkpoints/`：断点文件。
+- `frontend/`：实时看板。
+- `policy_bench.py`：零预测基准。
+- `smoke_check.py`：冒烟测试。
+- `run_all.sh`：一键依赖+训练（类 Unix）。
